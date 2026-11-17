@@ -1,0 +1,17 @@
+
+name: Redesign workflow
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redesign-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  redesign:
+    name: Prepare redesign build
+    uses: ./.github/workflows/android-build.yml
