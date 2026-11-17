@@ -1,0 +1,105 @@
+
+name: Android build
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-universal-apk:
+    name: Build universal APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          log-accepted-android-sdk-licenses: false
+          cmdline-tools-version: '14742923'
+          packages: 'platforms;android-37.0 build-tools;37.0.0 platform-tools'
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            --channel=0 \
+            --install "ndk;30.0.16248370"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> "$GITHUB_ENV"
+
+      - name: Build HEV native libraries
+        shell: bash
+        run: |
+          bash ./compile-hevtun.sh
+          mkdir -p V2rayNG/app/libs
+          cp -a libs/. V2rayNG/app/libs/
+
+      - name: Read pinned AndroidLibXrayLite tag
+        shell: bash
+        run: |
+          test -d AndroidLibXrayLite/.git || {
+            echo "AndroidLibXrayLite submodule was not checked out." >&2
+            exit 1
+          }
+          CURRENT_TAG="$(git -C AndroidLibXrayLite describe --tags --abbrev=0)"
+          echo "CURRENT_TAG=$CURRENT_TAG" >> "$GITHUB_ENV"
+          echo "Using AndroidLibXrayLite tag: $CURRENT_TAG"
+
+      - name: Download matching libv2ray AAR
+        uses: robinraju/release-downloader@v1.13
+        with:
+          repository: '2dust/AndroidLibXrayLite'
+          tag: ${{ env.CURRENT_TAG }}
+          fileName: 'libv2ray.aar'
+          out-file-path: V2rayNG/app/libs/
+
+      - name: Set up Java
+        uses: actions/setup-java@v6.2.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: V2rayNG/gradle/**/*.toml
+
+      - name: Build Play Store debug universal APK
+        shell: bash
+        working-directory: V2rayNG
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assemblePlaystoreDebug
+
+      - name: Verify universal APK exists
+        id: apk
+        shell: bash
+        run: |
+          APK="$(find V2rayNG/app/build/outputs/apk -type f -name '*universal*.apk' -print -quit)"
+          if [ -z "$APK" ]; then
+            echo "Universal APK was not generated." >&2
+            echo "APK files found:" >&2
+            find V2rayNG/app/build/outputs/apk -type f -name '*.apk' -print >&2 || true
+            exit 1
+          fi
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "Universal APK: $APK"
+
+      - name: Upload universal APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: universal-apk
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
